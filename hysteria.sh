@@ -93,7 +93,7 @@ inst_cert(){
         green "将使用自签证书作为 Hysteria 的节点证书"
 
         read -rp "请输入 Hysteria 自签证书地址 （去除https://） [回车默认必应]：" certsite
-        [[ -z $certsite ]] && certsite="www.bing.com"
+        [[ -z $certsite ]] && certsite="www.iosapps.itunes.apple.com"
         yellow "使用在 Hysteria 自签证书地址为：$certsite"
 
         WARPv4Status=$(curl -s4m8 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2)
