@@ -199,8 +199,8 @@ inst_pwd(){
 }
 
 inst_site(){
-    read -rp "请输入 Hysteria 2 的伪装网站地址 （去除https://） [回车世嘉maimai日本网站]：" proxysite
-    [[ -z $proxysite ]] && proxysite="maimai.sega.jp"
+    read -rp "请输入 Hysteria 2 的伪装网站地址 （去除https://） [回车iosapps网站]：" proxysite
+    [[ -z $proxysite ]] && proxysite="iosapps.itunes.apple.com"
     yellow "使用在 Hysteria 2 节点的伪装网站为：$proxysite"
 }
 
