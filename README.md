@@ -18,3 +18,9 @@ wget -N --no-check-certificate https://raw.githubusercontent.com/amcteams/hyster
 
 ### From
 AMC跨境社区
+
+
+vless  reality:
+```bash
+curl -L https://raw.githubusercontent.com/xiananrain/Install-Xray-Inbounds/main/install_vless_reality.sh -o install_vless_reality.sh && chmod +x install_vless_reality.sh && sudo ./install_vless_reality.sh
+```
