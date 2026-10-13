@@ -286,9 +286,14 @@ insthysteria(){
     fi
 
     if [[ ! ${SYSTEM} == "CentOS" ]]; then
-        ${PACKAGE_UPDATE}
+        # apt-get update 失败（如 sources.list 里有已下架的源）时不直接死掉：
+        # 给出明确提示，仍尝试用本地缓存继续安装依赖
+        if ! ${PACKAGE_UPDATE[int]}; then
+            yellow "警告: apt-get update 失败，常见原因是 sources.list 中含有已下架的源（如 bullseye-backports）"
+            yellow "可用 grep -rn backports /etc/apt/sources.list* 找到并注释掉对应行后重跑；现在尝试用本地缓存继续安装"
+        fi
     fi
-    ${PACKAGE_INSTALL} curl wget sudo qrencode procps iptables-persistent netfilter-persistent
+    ${PACKAGE_INSTALL[int]} curl wget sudo qrencode procps iptables-persistent netfilter-persistent
 
     wget -N https://raw.githubusercontent.com/Misaka-blog/hysteria-install/main/hy2/install_server.sh
     bash install_server.sh
