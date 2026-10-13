@@ -52,6 +52,74 @@ realip(){
     ip=$(curl -s4m8 ip.sb -k) || ip=$(curl -s6m8 ip.sb -k)
 }
 
+# 计算证书 SHA256 指纹（返回 64 位小写 hex，无冒号）
+# 用于客户端 pinSHA256 / fingerprint 证书锁定，替代已被 Xray-core 移除的 allowInsecure；
+# Xray 系客户端要求 hex 格式（base64 会报 encoding/hex 错误）
+get_cert_pin(){
+    openssl x509 -in "$1" -noout -fingerprint -sha256 2>/dev/null \
+        | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]'
+}
+
+# 同步更新各客户端配置中的 TLS 验证方式与证书指纹
+# 用法: sync_client_tls <pin(可空)> <insecure true|false> <link_insecure 0|1>
+sync_client_tls(){
+    local new_pin="$1" new_insecure="$2" new_link_insecure="$3"
+
+    # hy-client.yaml
+    if [[ -f /root/hy/hy-client.yaml ]]; then
+        sed -i "s/^\(\s*insecure:\).*/\1 $new_insecure/" /root/hy/hy-client.yaml
+        if grep -q "^\s*pinSHA256:" /root/hy/hy-client.yaml; then
+            if [[ -n $new_pin ]]; then
+                sed -i "s/^\(\s*pinSHA256:\).*/\1 $new_pin/" /root/hy/hy-client.yaml
+            else
+                sed -i "/^\s*pinSHA256:/d" /root/hy/hy-client.yaml
+            fi
+        elif [[ -n $new_pin ]]; then
+            sed -i "/^\s*insecure:/a\\  pinSHA256: $new_pin" /root/hy/hy-client.yaml
+        fi
+    fi
+
+    # hy-client.json
+    if [[ -f /root/hy/hy-client.json ]]; then
+        sed -i "s/\"insecure\": \(true\|false\)/\"insecure\": $new_insecure/" /root/hy/hy-client.json
+        if grep -q "\"pinSHA256\":" /root/hy/hy-client.json; then
+            if [[ -n $new_pin ]]; then
+                sed -i "s/\(\"pinSHA256\": \"\)[^\"]*/\1$new_pin/" /root/hy/hy-client.json
+            else
+                sed -i "/\"pinSHA256\":/d" /root/hy/hy-client.json
+            fi
+        elif [[ -n $new_pin ]]; then
+            sed -i "/\"insecure\": \(true\|false\)/i\\    \"pinSHA256\": \"$new_pin\"," /root/hy/hy-client.json
+        fi
+    fi
+
+    # clash-meta.yaml（mihomo 用 fingerprint 字段做证书锁定）
+    if [[ -f /root/hy/clash-meta.yaml ]]; then
+        sed -i "s/skip-cert-verify: \(true\|false\)/skip-cert-verify: $new_insecure/" /root/hy/clash-meta.yaml
+        if grep -q "^\s*fingerprint:" /root/hy/clash-meta.yaml; then
+            if [[ -n $new_pin ]]; then
+                sed -i "s/^\(\s*fingerprint:\).*/\1 $new_pin/" /root/hy/clash-meta.yaml
+            else
+                sed -i "/^\s*fingerprint:/d" /root/hy/clash-meta.yaml
+            fi
+        elif [[ -n $new_pin ]]; then
+            sed -i "/skip-cert-verify:/a\\    fingerprint: $new_pin" /root/hy/clash-meta.yaml
+        fi
+    fi
+
+    # url.txt（分享链接）
+    if [[ -f /root/hy/url.txt ]]; then
+        local url
+        url=$(cat /root/hy/url.txt)
+        url=$(echo "$url" | sed 's/&pinSHA256=[^&#]*//')
+        url=$(echo "$url" | sed "s/insecure=[01]/insecure=$new_link_insecure/")
+        if [[ -n $new_pin ]]; then
+            url=$(echo "$url" | sed "s|#|\&pinSHA256=$new_pin#|")
+        fi
+        echo "$url" > /root/hy/url.txt
+    fi
+}
+
 inst_cert(){
     green "Hysteria 2 协议证书申请方式如下："
     echo ""
@@ -277,6 +345,36 @@ EOF
         last_ip=$ip
     fi
 
+    # 根据证书类型决定客户端验证方式：
+    #  - 自签/自定义证书：insecure=1 + pinSHA256 证书指纹（指纹校验，替代已被移除的 allowInsecure）
+    #  - ACME 受信证书：insecure=0，走正常 CA 链验证，无需指纹
+    cert_pin=""
+    client_insecure="true"
+    link_insecure=1
+    if [[ $certInput == 2 ]]; then
+        client_insecure="false"
+        link_insecure=0
+    else
+        if ! type -P openssl >/dev/null 2>&1; then
+            ${PACKAGE_INSTALL[int]} openssl
+        fi
+        if [[ -f $cert_path ]]; then
+            cert_pin=$(get_cert_pin "$cert_path")
+            if [[ -n $cert_pin ]]; then
+                green "证书 SHA256 指纹 (pinSHA256): $cert_pin"
+            else
+                yellow "警告: 无法提取证书 SHA256 指纹，客户端配置将不含证书锁定"
+            fi
+        fi
+    fi
+    pin_yaml_line=""; pin_json_frag=""; pin_query=""; pin_clash_line=""
+    if [[ -n $cert_pin ]]; then
+        pin_yaml_line="  pinSHA256: $cert_pin"
+        pin_json_frag="$(printf ',\n    "pinSHA256": "%s"' "$cert_pin")"
+        pin_query="&pinSHA256=$cert_pin"
+        pin_clash_line="    fingerprint: $cert_pin"
+    fi
+
     mkdir /root/hy
     cat << EOF > /root/hy/hy-client.yaml
 server: $last_ip:$last_port
@@ -285,7 +383,8 @@ auth: $auth_pwd
 
 tls:
   sni: $hy_domain
-  insecure: true
+  insecure: $client_insecure
+$pin_yaml_line
 
 quic:
   initStreamReceiveWindow: 16777216
@@ -308,7 +407,7 @@ EOF
   "auth": "$auth_pwd",
   "tls": {
     "sni": "$hy_domain",
-    "insecure": true
+    "insecure": $client_insecure$pin_json_frag
   },
   "quic": {
     "initStreamReceiveWindow": 16777216,
@@ -349,7 +448,8 @@ proxies:
     port: $port
     password: $auth_pwd
     sni: $hy_domain
-    skip-cert-verify: true
+    skip-cert-verify: $client_insecure
+$pin_clash_line
 proxy-groups:
   - name: Proxy
     type: select
@@ -360,7 +460,7 @@ rules:
   - GEOIP,CN,DIRECT
   - MATCH,Proxy
 EOF
-    url="hysteria2://$auth_pwd@$last_ip:$last_port/?insecure=1&sni=$proxysite#Misaka-Hysteria2"
+    url="hysteria2://$auth_pwd@$last_ip:$last_port/?insecure=$link_insecure&sni=$proxysite${pin_query}#Misaka-Hysteria2"
     echo $url > /root/hy/url.txt
 
     systemctl daemon-reload
@@ -472,6 +572,16 @@ change_cert(){
     sed -i "s!$old_key!$key_path!g" /etc/hysteria/config.yaml
     sed -i "6s/$old_hydomain/$hy_domain/g" /root/hy/hy-client.yaml
     sed -i "5s/$old_hydomain/$hy_domain/g" /root/hy/hy-client.json
+
+    # 证书变了，指纹与验证方式同步更新到各客户端配置
+    new_pin=""; new_client_insecure="true"; new_link_insecure=1
+    if [[ $certInput == 2 ]]; then
+        new_client_insecure="false"; new_link_insecure=0
+    elif [[ -f $cert_path ]]; then
+        new_pin=$(get_cert_pin "$cert_path")
+        [[ -n $new_pin ]] && green "新证书 SHA256 指纹 (pinSHA256): $new_pin"
+    fi
+    sync_client_tls "$new_pin" "$new_client_insecure" "$new_link_insecure"
 
     stophysteria && starthysteria
 
